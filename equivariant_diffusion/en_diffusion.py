@@ -32,7 +32,7 @@ def bits_to_decimal(x, bits = 5):
     mask = rearrange(mask, 'd -> d 1')
 
     dec = reduce(x * mask, 'b d n -> b n', 'sum')
-    return (dec).clamp(0., 1.).permute(0,2,1)
+    return (dec).permute(0,2,1)
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
