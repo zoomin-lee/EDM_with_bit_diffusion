@@ -23,6 +23,7 @@ import train_test
 
 
 parser = argparse.ArgumentParser(description='e3_diffusion')
+parser.add_argument('--bit_diff', default=False)
 parser.add_argument('--exp_name', type=str, default='debug_10')
 parser.add_argument('--model', type=str, default='egnn_dynamics',
                     help='our_dynamics | schnet | simple_dynamics | '
@@ -39,7 +40,7 @@ parser.add_argument('--diffusion_loss_type', type=str, default='l2',
 parser.add_argument('--diffusion_noise_precision', type=float, default=1e-5)
 
 parser.add_argument('--n_epochs', type=int, default=10000)
-parser.add_argument('--batch_size', type=int, default=64)
+parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument('--break_train_epoch', type=eval, default=False,
                     help='True | False')
@@ -77,7 +78,7 @@ parser.add_argument('--dequantization', type=str, default='argmax_variational',
 parser.add_argument('--n_report_steps', type=int, default=50)
 parser.add_argument('--wandb_usr', type=str)
 parser.add_argument('--no_wandb', action='store_true', help='Disable wandb')
-parser.add_argument('--online', type=bool, default=True, help='True = wandb online -- False = wandb offline')
+parser.add_argument('--online', type=bool, default=False, help='True = wandb online -- False = wandb offline')
 parser.add_argument('--no-cuda', action='store_true', default=False, help='disable CUDA training')
 parser.add_argument('--save_model', type=eval, default=True, help='save model')
 parser.add_argument('--generate_epochs', type=int, default=1)
@@ -115,7 +116,7 @@ parser.add_argument('--sequential', action='store_true',
                     help='Organize data by size to reduce average memory usage.')
 args = parser.parse_args()
 
-data_file = './data/geom/geom_drugs_30.npy'
+data_file = '/mnt/ssd1/jm/geom/geom_drugs_30.npy'
 
 if args.remove_h:
     raise NotImplementedError()

@@ -83,7 +83,6 @@ class EGNN_dynamics_QM9(nn.Module):
             output = self.gnn(xh, edges, node_mask=node_mask)
             vel = output[:, 0:3] * node_mask
             h_final = output[:, 3:]
-
         else:
             raise Exception("Wrong mode %s" % self.mode)
 

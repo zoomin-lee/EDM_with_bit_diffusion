@@ -9,7 +9,10 @@ from equivariant_diffusion.en_diffusion import EnVariationalDiffusion
 
 def get_model(args, device, dataset_info, dataloader_train):
     histogram = dataset_info['n_nodes']
-    in_node_nf = len(dataset_info['atom_decoder']) + int(args.include_charges)
+    if args.bit_diff : 
+        in_node_nf = len(bin(len(dataset_info['atom_decoder']))[2:])
+    else :
+        in_node_nf = len(dataset_info['atom_decoder']) + int(args.include_charges)
     nodes_dist = DistributionNodes(histogram)
 
     prop_dist = None
@@ -40,7 +43,8 @@ def get_model(args, device, dataset_info, dataloader_train):
             noise_precision=args.diffusion_noise_precision,
             loss_type=args.diffusion_loss_type,
             norm_values=args.normalize_factors,
-            include_charges=args.include_charges
+            include_charges=args.include_charges,
+            bit_diffusion = args.bit_diff,
             )
 
         return vdm, nodes_dist, prop_dist

@@ -5,7 +5,34 @@ import torch
 from egnn import models
 from torch.nn import functional as F
 from equivariant_diffusion import utils as diffusion_utils
+from einops import rearrange, reduce, repeat
+from einops.layers.torch import Rearrange
 
+# for bit diffusion
+def decimal_to_bits(x, bits = 5):
+    """ expects image tensor ranging from 0 to 1, outputs bit tensor ranging from -1 to 1 """
+    device = x.device
+
+    mask = 2 ** torch.arange(bits - 1, -1, -1, device=device)
+
+    mask = rearrange(mask, 'd -> d 1')
+    x = rearrange(x, 'b n -> b 1 n')
+
+    bits = ((x & mask) != 0).float()
+
+    return bits.permute(0,2,1)
+
+def bits_to_decimal(x, bits = 5):
+    """ expects bits from -1 to 1, outputs image tensor from 0 to 1 """
+    device = x.device
+
+    x = (x.permute(0,2,1) > 0).int()
+    mask = 2 ** torch.arange(bits - 1, -1, -1, device = device, dtype = torch.int32)
+
+    mask = rearrange(mask, 'd -> d 1')
+
+    dec = reduce(x * mask, 'b d n -> b n', 'sum')
+    return (dec).clamp(0., 1.).permute(0,2,1)
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
@@ -185,16 +212,12 @@ class PredefinedNoiseSchedule(torch.nn.Module):
         else:
             raise ValueError(noise_schedule)
 
-        print('alphas2', alphas2)
-
         sigmas2 = 1 - alphas2
 
         log_alphas2 = np.log(alphas2)
         log_sigmas2 = np.log(sigmas2)
 
         log_alphas2_to_sigmas2 = log_alphas2 - log_sigmas2
-
-        print('gamma', -log_alphas2_to_sigmas2)
 
         self.gamma = torch.nn.Parameter(
             torch.from_numpy(-log_alphas2_to_sigmas2).float(),
@@ -221,8 +244,6 @@ class GammaNetwork(torch.nn.Module):
     def show_schedule(self, num_steps=50):
         t = torch.linspace(0, 1, num_steps).view(num_steps, 1)
         gamma = self.forward(t)
-        print('Gamma schedule:')
-        print(gamma.detach().cpu().numpy().reshape(num_steps))
 
     def gamma_tilde(self, t):
         l1_t = self.l1(t)
@@ -258,7 +279,7 @@ class EnVariationalDiffusion(torch.nn.Module):
             dynamics: models.EGNN_dynamics_QM9, in_node_nf: int, n_dims: int,
             timesteps: int = 1000, parametrization='eps', noise_schedule='learned',
             noise_precision=1e-4, loss_type='vlb', norm_values=(1., 1., 1.),
-            norm_biases=(None, 0., 0.), include_charges=True):
+            norm_biases=(None, 0., 0.,), include_charges=True, bit_diffusion=False):
         super().__init__()
 
         assert loss_type in {'vlb', 'l2'}
@@ -279,7 +300,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # The network that will predict the denoising.
         self.dynamics = dynamics
-
+        self.bit_diffusion = bit_diffusion
         self.in_node_nf = in_node_nf
         self.n_dims = n_dims
         self.num_classes = self.in_node_nf - self.include_charges
@@ -344,14 +365,18 @@ class EnVariationalDiffusion(torch.nn.Module):
         delta_log_px = -self.subspace_dimensionality(node_mask) * np.log(self.norm_values[0])
 
         # Casting to float in case h still has long or int type.
+        decimal = h['categorical'].argmax(2) # torch.Size([32, 73])
+        bit = decimal_to_bits(decimal, self.in_node_nf)
+            
         h_cat = (h['categorical'].float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
+        h_bit = (bit.float() - self.norm_biases[1]) / self.norm_values[1] * node_mask
         h_int = (h['integer'].float() - self.norm_biases[2]) / self.norm_values[2]
 
         if self.include_charges:
             h_int = h_int * node_mask
 
         # Create new h dictionary.
-        h = {'categorical': h_cat, 'integer': h_int}
+        h = {'categorical': h_cat, 'integer': h_int, 'bit': h_bit}
 
         return x, h, delta_log_px
 
@@ -500,8 +525,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         eps = self.sample_combined_position_feature_noise(bs, mu.size(1), node_mask)
         return mu + sigma * eps
 
-    def log_pxh_given_z0_without_constants(
-            self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
+    def log_pxh_given_z0_without_constants(self, x, h, z_t, gamma_0, eps, net_out, node_mask, epsilon=1e-10):
         # Discrete properties are predicted directly from z_t.
         z_h_cat = z_t[:, :, self.n_dims:-1] if self.include_charges else z_t[:, :, self.n_dims:]
         z_h_int = z_t[:, :, -1:] if self.include_charges else torch.zeros(0).to(z_t.device)
@@ -521,7 +545,10 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Compute delta indicator masks.
         h_integer = torch.round(h['integer'] * self.norm_values[2] + self.norm_biases[2]).long()
-        onehot = h['categorical'] * self.norm_values[1] + self.norm_biases[1]
+        if self.bit_diffusion :
+            cat = h['bit'] * self.norm_values[1] + self.norm_biases[1]
+        else : 
+            cat = h['categorical'] * self.norm_values[1] + self.norm_biases[1]
 
         estimated_h_integer = z_h_int * self.norm_values[2] + self.norm_biases[2]
         estimated_h_cat = z_h_cat * self.norm_values[1] + self.norm_biases[1]
@@ -553,7 +580,7 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         # Select the log_prob of the current category usign the onehot
         # representation.
-        log_ph_cat = sum_except_batch(log_probabilities * onehot * node_mask)
+        log_ph_cat = sum_except_batch(log_probabilities * cat * node_mask)
 
         # Combine categorical and integer log-probabilities.
         log_p_h_given_z = log_ph_integer + log_ph_cat
@@ -599,7 +626,10 @@ class EnVariationalDiffusion(torch.nn.Module):
             n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
 
         # Concatenate x, h[integer] and h[categorical].
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        if self.bit_diffusion :
+            xh = torch.cat([x, h['bit'], h['integer']], dim=2)
+        else:
+            xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         z_t = alpha_t * xh + sigma_t * eps
 
@@ -630,55 +660,23 @@ class EnVariationalDiffusion(torch.nn.Module):
         # The KL between q(z1 | x) and p(z1) = Normal(0, 1). Should be close to zero.
         kl_prior = self.kl_prior(xh, node_mask)
 
-        # Combining the terms
-        if t0_always:
-            loss_t = loss_t_larger_than_zero
-            num_terms = self.T  # Since t=0 is not included here.
+        loss_term_0 = -self.log_pxh_given_z0_without_constants(x, h, z_t, gamma_t, eps, net_out, node_mask)
+
+        t_is_not_zero = 1 - t_is_zero
+
+        loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
+
+        # Only upweigh estimator if using the vlb objective.
+        if self.training and self.loss_type == 'l2':
+            estimator_loss_terms = loss_t
+        else:
+            num_terms = self.T + 1  # Includes t = 0.
             estimator_loss_terms = num_terms * loss_t
 
-            # Compute noise values for t = 0.
-            t_zeros = torch.zeros_like(s)
-            gamma_0 = self.inflate_batch_array(self.gamma(t_zeros), x)
-            alpha_0 = self.alpha(gamma_0, x)
-            sigma_0 = self.sigma(gamma_0, x)
+        assert kl_prior.size() == estimator_loss_terms.size()
+        assert kl_prior.size() == neg_log_constants.size()
 
-            # Sample z_0 given x, h for timestep t, from q(z_t | x, h)
-            eps_0 = self.sample_combined_position_feature_noise(
-                n_samples=x.size(0), n_nodes=x.size(1), node_mask=node_mask)
-            z_0 = alpha_0 * xh + sigma_0 * eps_0
-
-            net_out = self.phi(z_0, t_zeros, node_mask, edge_mask, context)
-
-            loss_term_0 = -self.log_pxh_given_z0_without_constants(
-                x, h, z_0, gamma_0, eps_0, net_out, node_mask)
-
-            assert kl_prior.size() == estimator_loss_terms.size()
-            assert kl_prior.size() == neg_log_constants.size()
-            assert kl_prior.size() == loss_term_0.size()
-
-            loss = kl_prior + estimator_loss_terms + neg_log_constants + loss_term_0
-
-        else:
-            # Computes the L_0 term (even if gamma_t is not actually gamma_0)
-            # and this will later be selected via masking.
-            loss_term_0 = -self.log_pxh_given_z0_without_constants(
-                x, h, z_t, gamma_t, eps, net_out, node_mask)
-
-            t_is_not_zero = 1 - t_is_zero
-
-            loss_t = loss_term_0 * t_is_zero.squeeze() + t_is_not_zero.squeeze() * loss_t_larger_than_zero
-
-            # Only upweigh estimator if using the vlb objective.
-            if self.training and self.loss_type == 'l2':
-                estimator_loss_terms = loss_t
-            else:
-                num_terms = self.T + 1  # Includes t = 0.
-                estimator_loss_terms = num_terms * loss_t
-
-            assert kl_prior.size() == estimator_loss_terms.size()
-            assert kl_prior.size() == neg_log_constants.size()
-
-            loss = kl_prior + estimator_loss_terms + neg_log_constants
+        loss = kl_prior + estimator_loss_terms + neg_log_constants
 
         assert len(loss.shape) == 1, f'{loss.shape} has more than only batch dim.'
 
