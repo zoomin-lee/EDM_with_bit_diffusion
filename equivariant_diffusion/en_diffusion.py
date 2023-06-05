@@ -513,10 +513,15 @@ class EnVariationalDiffusion(torch.nn.Module):
 
         h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
         x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
-
-        h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+        
         h_int = torch.round(h_int).long() * node_mask
-        h = {'integer': h_int, 'categorical': h_cat}
+        if self.bit_diffusion :
+            decimal = bits_to_decimal(h_cat, self.in_node_nf)
+            h_bit = decimal_to_bits(decimal, self.in_node_nf) * node_mask
+            h = {'integer': h_int, 'bit': h_bit}
+        else : 
+            h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
+            h = {'integer': h_int, 'categorical': h_cat}
         return x, h
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False):
@@ -825,8 +830,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         x, h = self.sample_p_xh_given_z0(z, node_mask, edge_mask, context)
 
         diffusion_utils.assert_mean_zero_with_mask(x[:, :, :self.n_dims], node_mask)
-
-        xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
+        if self.bit_diffusion:
+            xh = torch.cat([x, h['bit'], h['integer']], dim=2)
+        else:
+            xh = torch.cat([x, h['categorical'], h['integer']], dim=2)
         chain[0] = xh  # Overwrite last frame with the resulting x and h.
 
         chain_flat = chain.view(n_samples * keep_frames, *z.size()[1:])
