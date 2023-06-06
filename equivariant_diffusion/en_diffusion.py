@@ -517,11 +517,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         h_int = torch.round(h_int).long() * node_mask
         if self.bit_diffusion :
             decimal = bits_to_decimal(h_cat, self.in_node_nf)
-            h_bit = decimal_to_bits(decimal, self.in_node_nf) * node_mask
-            h = {'integer': h_int, 'bit': h_bit}
+            h_cat = F.one_hot(decimal, self.num_classes) * node_mask
         else : 
             h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-            h = {'integer': h_int, 'categorical': h_cat}
+        h = {'integer': h_int, 'categorical': h_cat}
         return x, h
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False):
