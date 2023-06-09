@@ -32,7 +32,7 @@ def bits_to_decimal(x, bits = 5):
     mask = rearrange(mask, 'd -> d 1')
 
     dec = reduce(x * mask, 'b d n -> b n', 'sum')
-    return (dec).permute(0,2,1)
+    return dec
 
 # Defining some useful util functions.
 def expm1(x: torch.Tensor) -> torch.Tensor:
@@ -303,7 +303,10 @@ class EnVariationalDiffusion(torch.nn.Module):
         self.bit_diffusion = bit_diffusion
         self.in_node_nf = in_node_nf
         self.n_dims = n_dims
-        self.num_classes = self.in_node_nf - self.include_charges
+        if bit_diffusion:
+            self.num_classes = 16 - self.include_charges
+        else:
+            self.num_classes = self.in_node_nf - self.include_charges
 
         self.T = timesteps
         self.parametrization = parametrization
@@ -510,13 +513,19 @@ class EnVariationalDiffusion(torch.nn.Module):
         xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=node_mask, fix_noise=fix_noise)
 
         x = xh[:, :, :self.n_dims]
-
-        h_int = z0[:, :, -1:] if self.include_charges else torch.zeros(0).to(z0.device)
-        x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+        
+        if self.include_charges:
+            h_int = z0[:, :, -1:]
+            x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:-1], h_int, node_mask)
+        else: 
+            h_int = torch.zeros(0).to(z0.device)
+            x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:], h_int, node_mask)
         
         h_int = torch.round(h_int).long() * node_mask
         if self.bit_diffusion :
             decimal = bits_to_decimal(h_cat, self.in_node_nf)
+            mask = decimal > (self.num_classes-1)
+            decimal[mask] = torch.randint(0, self.num_classes, (len(mask[mask==True]),)).cuda()
             h_cat = F.one_hot(decimal, self.num_classes) * node_mask
         else : 
             h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
