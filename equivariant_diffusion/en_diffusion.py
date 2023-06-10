@@ -304,7 +304,7 @@ class EnVariationalDiffusion(torch.nn.Module):
         self.in_node_nf = in_node_nf
         self.n_dims = n_dims
         if bit_diffusion:
-            self.num_classes = 16 - self.include_charges
+            self.num_classes = 4 - self.include_charges
         else:
             self.num_classes = self.in_node_nf - self.include_charges
 
@@ -522,14 +522,16 @@ class EnVariationalDiffusion(torch.nn.Module):
             x, h_cat, h_int = self.unnormalize(x, z0[:, :, self.n_dims:], h_int, node_mask)
         
         h_int = torch.round(h_int).long() * node_mask
+        
         if self.bit_diffusion :
             decimal = bits_to_decimal(h_cat, self.in_node_nf)
             mask = decimal > (self.num_classes-1)
             decimal[mask] = torch.randint(0, self.num_classes, (len(mask[mask==True]),)).cuda()
             h_cat = F.one_hot(decimal, self.num_classes) * node_mask
+            h = {'integer': h_int, 'bit': h_cat}
         else : 
             h_cat = F.one_hot(torch.argmax(h_cat, dim=2), self.num_classes) * node_mask
-        h = {'integer': h_int, 'categorical': h_cat}
+            h = {'integer': h_int, 'categorical': h_cat}
         return x, h
 
     def sample_normal(self, mu, sigma, node_mask, fix_noise=False):
