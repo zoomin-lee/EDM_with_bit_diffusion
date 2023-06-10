@@ -110,7 +110,8 @@ def sample_chain(args, device, flow, n_tries, dataset_info, prop_dist=None):
 def sample(args, device, generative_model, dataset_info,
            prop_dist=None, nodesxsample=torch.tensor([10]), context=None,
            fix_noise=False):
-    max_n_nodes = dataset_info['max_n_nodes']  # this is the maximum node_size in QM9
+    
+    max_n_nodes = dataset_info['max_n_nodes']
 
     assert int(torch.max(nodesxsample)) <= max_n_nodes
     batch_size = len(nodesxsample)
@@ -140,9 +141,13 @@ def sample(args, device, generative_model, dataset_info,
 
         assert_correctly_masked(x, node_mask)
         assert_mean_zero_with_mask(x, node_mask)
-
-        one_hot = h['categorical']
-        charges = h['integer']
+        
+        if args.bit_diff == True:
+            one_hot = h['bit']
+            charges = h['integer']
+        else:
+            one_hot = h['categorical']
+            charges = h['integer']
 
         assert_correctly_masked(one_hot.float(), node_mask)
         if args.include_charges:
